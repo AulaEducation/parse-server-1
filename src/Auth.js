@@ -115,13 +115,15 @@ Auth.prototype.getUserRoles = function(className) {
   const isCustomRole = Object.keys(this.config.auth.roles).indexOf(className) > -1;
 
   this.rolePromise = isCustomRole
-    ? this._customLoadRoles(this.config.auth.roles, className)
+    ? this._customLoadRoles(className)
     : this._loadRoles();
 
   return this.rolePromise;
 };
 
-Auth.prototype._customLoadRoles = function (roles, className) {
+Auth.prototype._customLoadRoles = function (className) {
+  const roles = this.config.auth.roles;
+
   const restWhere = {
     'user': {
       __type: 'Pointer',

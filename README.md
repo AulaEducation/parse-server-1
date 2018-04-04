@@ -2,7 +2,7 @@
 
 ## Cusom Role configs
 
-- Add the following to `config.json`. Role can be string ("read"), or array (["read", "write"])
+- Add the following to `config.json`. Role can be string (`"read"`), or array (`["read", "write"]`)
 
 ```
 "auth": {
