@@ -102,7 +102,7 @@ var getAuthForLegacySessionToken = function({config, sessionToken, installationI
 }
 
 // Returns a promise that resolves to an array of role names
-Auth.prototype.getUserRoles = function() {
+Auth.prototype.getUserRoles = function(className) {
   if (this.isMaster || !this.user) {
     return Promise.resolve([]);
   }
@@ -112,8 +112,54 @@ Auth.prototype.getUserRoles = function() {
   if (this.rolePromise) {
     return this.rolePromise;
   }
-  this.rolePromise = this._loadRoles();
+  const isCustomRole = Object.keys(this.config.auth.roles).indexOf(className) > -1;
+
+  this.rolePromise = isCustomRole
+    ? this._customLoadRoles(this.config.auth.roles, className)
+    : this._loadRoles();
+
   return this.rolePromise;
+};
+
+Auth.prototype._customLoadRoles = function (roles, className) {
+  const restWhere = {
+    'user': {
+      __type: 'Pointer',
+      className: '_User',
+      objectId: this.user.id
+    }
+  };
+
+  const query = new RestQuery(this.config, master(this.config), 'UBClassRoomUser', restWhere, {});
+
+  return query.execute().then(response => {
+    const results = response.results;
+    // Nothing found
+    if (!results.length) {
+      return Promise.resolve([]);
+    }
+
+    const userRoles = results.map((r) => {
+      const classId = r.classRoom.objectId;
+      const roleNames = roles[className][r.role];
+
+      if (!roleNames.length) {
+        return [];
+      }
+
+      if (typeof roleNames === 'string') {
+        return [].concat(`role:classRoom-${classId}-${roleNames}`);
+      }
+
+      return roleNames.map(rN => `role:classRoom-${classId}-${rN}`)
+    });
+
+    // flatten array of arrays
+    this.userRoles = userRoles.reduce((a, b) => a.concat(b), []);
+    this.fetchedRoles = true;
+
+    return Promise.resolve(this.userRoles);
+  });
 };
 
 // Iterates through the role tree and compiles a users roles
