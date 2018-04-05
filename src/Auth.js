@@ -102,7 +102,7 @@ var getAuthForLegacySessionToken = function({config, sessionToken, installationI
 }
 
 // Returns a promise that resolves to an array of role names
-Auth.prototype.getUserRoles = function(className) {
+Auth.prototype.getUserRoles = function(className, hasObjectId) {
   if (this.isMaster || !this.user) {
     return Promise.resolve([]);
   }
@@ -112,18 +112,27 @@ Auth.prototype.getUserRoles = function(className) {
   if (this.rolePromise) {
     return this.rolePromise;
   }
-  const isCustomRole = Object.keys(this.config.auth.roles).indexOf(className) > -1;
 
-  this.rolePromise = isCustomRole
-    ? this._customLoadRoles(className)
-    : this._loadRoles();
+  return this._getCustomRoles(className, (roles) => {
+    this.rolePromise = !roles.length
+      ? this._loadRoles()
+      : this._customLoadRoles(roles, className, hasObjectId);
 
-  return this.rolePromise;
+    return this.rolePromise;
+  });
 };
 
-Auth.prototype._customLoadRoles = function (className) {
-  const roles = this.config.auth.roles;
+Auth.prototype._getCustomRoles = function (className, done) {
+  const restWhere = {
+    objectName: className
+  };
 
+  const query = new RestQuery(this.config, master(this.config), 'UBRoleDefinition', restWhere, {});
+
+  return query.execute().then(response => done(response.results));
+}
+
+Auth.prototype._customLoadRoles = function (roles, className, hasObjectId) {
   const restWhere = {
     'user': {
       __type: 'Pointer',
@@ -141,24 +150,27 @@ Auth.prototype._customLoadRoles = function (className) {
       return Promise.resolve([]);
     }
 
-    const userRoles = results.map((r) => {
-      const classId = r.classRoom.objectId;
-      const roleNames = roles[className][r.role];
+    // a user may have multiple roles: student, instructor
+    const userRoles = results.map((result) => {
+      const classId = result.classRoom.objectId;
+      const matchedRole = roles.find(ro => ro.role === result.role);
 
-      if (!roleNames.length) {
-        return [];
-      }
+      return matchedRole
+        ? matchedRole.permissions.map(p => { // p can be read, create, update
+            // hasObjectId is true only for write request
+            if ((hasObjectId && p === 'update') || (!hasObjectId && p === 'create')) {
+              return `role:classRoom-${classId}-write`;
+            }
 
-      if (typeof roleNames === 'string') {
-        return [].concat(`role:classRoom-${classId}-${roleNames}`);
-      }
-
-      return roleNames.map(rN => `role:classRoom-${classId}-${rN}`)
+            return `role:classRoom-${classId}-read`;
+          })
+        : null;
     });
 
-    // flatten array of arrays
-    this.userRoles = userRoles.reduce((a, b) => a.concat(b), []);
-    this.fetchedRoles = true;
+
+    this.userRoles = userRoles
+      .reduce((a, b) => b ? a.concat(b) : a, []) // flatten array of arrays
+      .filter((v, i, a) => i == a.indexOf(v)); // filter duplicated value
 
     return Promise.resolve(this.userRoles);
   });
