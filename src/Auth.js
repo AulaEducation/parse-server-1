@@ -106,78 +106,115 @@ Auth.prototype.getUserRoles = function(className, hasObjectId) {
   if (this.isMaster || !this.user) {
     return Promise.resolve([]);
   }
+
   if (this.fetchedRoles) {
     return Promise.resolve(this.userRoles);
   }
+
   if (this.rolePromise) {
     return this.rolePromise;
   }
 
-  return this._getCustomRoles(className, (roles) => {
-    this.rolePromise = !roles.length
-      ? this._loadRoles()
-      : this._customLoadRoles(roles, className, hasObjectId);
+  // load general roles based on user.generalRole
+  return this._getGeneralRole()
+    .then(dRoles => {
+      return this._getRolesByClass(className)
+        .then((roles) => {
+          this.rolePromise = !roles.length
+            ? this._loadRoles(dRoles)
+            : this._loadCustomRoles(dRoles, roles, className, hasObjectId);
 
-    return this.rolePromise;
+          return this.rolePromise;
+        });
+    });
+};
+
+Auth.prototype._queryByClassName = function(restWhere, className) {
+  return new Promise((resolve) => {
+    const query = new RestQuery(this.config, master(this.config), className, restWhere, {});
+
+    return query.execute().then(response => resolve(response.results));
   });
 };
 
-Auth.prototype._getCustomRoles = function (className, done) {
+// for direct roles such as direct message
+Auth.prototype._getGeneralRole = function() {
+  const restWhere = {
+    name: this.user.get('generalRole') || 'general'
+  };
+
+  return this._queryByClassName(restWhere, 'UBUserRoleDefinition')
+    .then(results => results.length ? results[0].permissions.map(p => `role:${p}`) : []);
+};
+
+// for class based roles
+Auth.prototype._getRolesByClass = function(className) {
   const restWhere = {
     objectName: className
   };
 
-  const query = new RestQuery(this.config, master(this.config), 'UBRoleDefinition', restWhere, {});
+  return this._queryByClassName(restWhere, 'UBRoleDefinition');
+};
 
-  return query.execute().then(response => done(response.results));
-}
+Auth.prototype._loadCustomRoles = function(dRoles, roles, className, hasObjectId) {
+  var cacheAdapter = this.config.cacheController;
 
-Auth.prototype._customLoadRoles = function (roles, className, hasObjectId) {
-  const restWhere = {
-    'user': {
-      __type: 'Pointer',
-      className: '_User',
-      objectId: this.user.id
-    }
-  };
-
-  const query = new RestQuery(this.config, master(this.config), 'UBClassRoomUser', restWhere, {});
-
-  return query.execute().then(response => {
-    const results = response.results;
-    // Nothing found
-    if (!results.length) {
-      return Promise.resolve([]);
+  return cacheAdapter.role.get(this.user.id).then((cachedRoles) => {
+    if (cachedRoles != null) {
+      this.fetchedRoles = true;
+      this.userRoles = cachedRoles;
+      return Promise.resolve(cachedRoles);
     }
 
-    // a user may have multiple roles: student, instructor
-    const userRoles = results.map((result) => {
-      const classId = result.classRoom.objectId;
-      const matchedRole = roles.find(ro => ro.role === result.role);
+    const restWhere = {
+      'user': {
+        __type: 'Pointer',
+        className: '_User',
+        objectId: this.user.id
+      }
+    };
 
-      return matchedRole
-        ? matchedRole.permissions.map(p => { // p can be read, create, update
-            // hasObjectId is true only for write request
-            if ((hasObjectId && p === 'update') || (!hasObjectId && p === 'create')) {
-              return `role:classRoom-${classId}-write`;
-            }
+    return this._queryByClassName(restWhere, 'UBClassRoomUser')
+      .then(results => {
+        // Nothing found
+        if (!results.length) {
+          cacheAdapter.role.put(this.user.id, Array(...this.userRoles));
+          return Promise.resolve([]);
+        }
 
-            return `role:classRoom-${classId}-read`;
-          })
-        : null;
-    });
+        // a user may have multiple roles: student, instructor
+        const userRoles = results.map((result) => {
+          const classId = result.classRoom.objectId;
+          const matchedRole = roles.find(ro => ro.role === result.role);
 
+          return matchedRole
+            ? matchedRole.permissions.map(p => { // p can be read, create, update
+              // hasObjectId is true only for write request
+              if ((hasObjectId && p === 'update') || (!hasObjectId && p === 'create')) {
+                return `role:classRoom-${classId}-write`;
+              }
 
-    this.userRoles = userRoles
-      .reduce((a, b) => b ? a.concat(b) : a, []) // flatten array of arrays
-      .filter((v, i, a) => i == a.indexOf(v)); // filter duplicated value
+              return `role:classRoom-${classId}-read`;
+            })
+            : null;
+        });
 
-    return Promise.resolve(this.userRoles);
+        const cRoles = userRoles
+          .reduce((a, b) => b ? a.concat(b) : a, []) // flatten array of arrays
+          .filter((v, i, a) => i == a.indexOf(v)); // filter duplicated value
+
+        this.userRoles = cRoles.concat(dRoles);
+        this.fetchedRoles = true;
+        this.rolePromise = null;
+        cacheAdapter.role.put(this.user.id, Array(...this.userRoles));
+
+        return Promise.resolve(this.userRoles);
+      });
   });
 };
 
 // Iterates through the role tree and compiles a users roles
-Auth.prototype._loadRoles = function() {
+Auth.prototype._loadRoles = function(dRoles) {
   var cacheAdapter = this.config.cacheController;
   return cacheAdapter.role.get(this.user.id).then((cachedRoles) => {
     if (cachedRoles != null) {
@@ -214,9 +251,11 @@ Auth.prototype._loadRoles = function() {
       // run the recursive finding
       return this._getAllRolesNamesForRoleIds(rolesMap.ids, rolesMap.names)
         .then((roleNames) => {
-          this.userRoles = roleNames.map((r) => {
+          const userRoles = roleNames.map((r) => {
             return 'role:' + r;
           });
+
+          this.userRoles = userRoles.concat(dRoles);
           this.fetchedRoles = true;
           this.rolePromise = null;
           cacheAdapter.role.put(this.user.id, Array(...this.userRoles));
