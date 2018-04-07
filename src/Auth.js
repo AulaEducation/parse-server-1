@@ -191,10 +191,10 @@ Auth.prototype._loadCustomRoles = function(dRoles, roles, className, hasObjectId
             ? matchedRole.permissions.map(p => { // p can be read, create, update
               // hasObjectId is true only for write request
               if ((hasObjectId && p === 'update') || (!hasObjectId && p === 'create')) {
-                return `role:classRoom-${classId}-write`;
+                return `role:${className}-${classId}-write`;
               }
 
-              return `role:classRoom-${classId}-read`;
+              return `role:${className}-${classId}-read`;
             })
             : null;
         });
