@@ -177,10 +177,10 @@ Auth.prototype._loadCustomRoles = function(dRoles, roles, className, spacePointe
 
     return this._queryByClassName(restWhere, 'UBClassRoomUser')
       .then(results => {
-      // Nothing found
+        // Nothing found
+        // user doesn't have any permission on this object
         if (!results.length) {
-          cacheAdapter.role.put(this.user.id, Array(...this.userRoles));
-          return Promise.resolve([]);
+          throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to access space ${spacePointer.id}`);
         }
 
         // a user may have multiple roles in one space: student, instructor
@@ -214,7 +214,7 @@ Auth.prototype._loadCustomRoles = function(dRoles, roles, className, spacePointe
         const canCreate = flattenUserRoles.reduce((a, b) => a || b.isCreate, false);
 
         if (isCreateRequest && !canCreate) {
-          throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `This user is not allowed to create new object in ${className}`);
+          throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to create new object in ${className}`);
         }
 
         const cRoles = flattenUserRoles
