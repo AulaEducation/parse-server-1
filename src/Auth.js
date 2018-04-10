@@ -102,7 +102,7 @@ var getAuthForLegacySessionToken = function({config, sessionToken, installationI
 }
 
 // Returns a promise that resolves to an array of role names
-Auth.prototype.getUserRoles = function(className, hasObjectId) {
+Auth.prototype.getUserRoles = function(className, spacePointer, hasObjectId) {
   if (this.isMaster || !this.user) {
     return Promise.resolve([]);
   }
@@ -120,9 +120,9 @@ Auth.prototype.getUserRoles = function(className, hasObjectId) {
     .then(dRoles => {
       return this._getRolesByClass(className)
         .then((roles) => {
-          this.rolePromise = !roles.length
+          this.rolePromise = !roles.length || !spacePointer
             ? this._loadRoles(dRoles)
-            : this._loadCustomRoles(dRoles, roles, className, hasObjectId);
+            : this._loadCustomRoles(dRoles, roles, className, spacePointer, hasObjectId);
 
           return this.rolePromise;
         });
@@ -156,7 +156,7 @@ Auth.prototype._getRolesByClass = function(className) {
   return this._queryByClassName(restWhere, 'UBRoleDefinition');
 };
 
-Auth.prototype._loadCustomRoles = function(dRoles, roles, className, isCreateRequest) {
+Auth.prototype._loadCustomRoles = function(dRoles, roles, className, spacePointer, isCreateRequest) {
   const cacheAdapter = this.config.cacheController;
 
   return cacheAdapter.role.get(this.user.id).then((cachedRoles) => {
@@ -167,11 +167,12 @@ Auth.prototype._loadCustomRoles = function(dRoles, roles, className, isCreateReq
     }
 
     const restWhere = {
-      'user': {
+      user: {
         __type: 'Pointer',
         className: '_User',
         objectId: this.user.id
-      }
+      },
+      classRoom: spacePointer
     };
 
     return this._queryByClassName(restWhere, 'UBClassRoomUser')
