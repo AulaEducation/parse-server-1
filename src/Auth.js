@@ -157,7 +157,7 @@ Auth.prototype._getRolesByClass = function(className) {
 };
 
 Auth.prototype._loadCustomRoles = function(dRoles, roles, className, isCreateRequest) {
-  var cacheAdapter = this.config.cacheController;
+  const cacheAdapter = this.config.cacheController;
 
   return cacheAdapter.role.get(this.user.id).then((cachedRoles) => {
     if (cachedRoles != null) {
@@ -176,7 +176,7 @@ Auth.prototype._loadCustomRoles = function(dRoles, roles, className, isCreateReq
 
     return this._queryByClassName(restWhere, 'UBClassRoomUser')
       .then(results => {
-        // Nothing found
+      // Nothing found
         if (!results.length) {
           cacheAdapter.role.put(this.user.id, Array(...this.userRoles));
           return Promise.resolve([]);
@@ -192,29 +192,32 @@ Auth.prototype._loadCustomRoles = function(dRoles, roles, className, isCreateReq
           // for example: user A in class B, the roles for object C (with spaceId = B) are ['create', 'update', 'read']
           const matchedRole = roles.find(ro => ro.role === result.role);
 
-          // if this is new object, and user can't create, reject the request
-          // isCreateRequest is passed from RestWrite,
-          // indicate that this is write request, with no objectId
-          const canCreate = matchedRole.permissions.find(p => p === 'create').length > 0;
+          const roleMap = {
+            create: 'write',
+            update: 'write',
+            read: 'read'
+          };
 
-          if (isCreateRequest && !canCreate) {
-            throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'This user is not allowed to create new object in ', className);
-          }
-
-          return matchedRole
-            ? matchedRole.permissions.map(p => {
-              // p can be read, create, update
-              if (p === 'update' || p === 'create') {
-                return `role:${className}-${spaceId}-write`;
-              }
-
-              return `role:${className}-${spaceId}-read`;
-            })
-            : null;
+          return matchedRole ? matchedRole.permissions.map(p => ({
+            role: `role:${className}-${spaceId}-${roleMap[p]}`,
+            isCreate: p === 'create'
+          })) : null;
         });
 
-        const cRoles = userRoles
-          .reduce((a, b) => b ? a.concat(b) : a, []) // flatten array of arrays
+        // flatten roles to an array of objects
+        const flattenUserRoles = userRoles.reduce((a, b) => b ? a.concat(b) : a, []);
+
+        // if this is new object, and user can't create, reject the request
+        // isCreateRequest is passed from RestWrite,
+        // indicate that this is write request, with no objectId
+        const canCreate = flattenUserRoles.reduce((a, b) => a || b.isCreate, false);
+
+        if (isCreateRequest && !canCreate) {
+          throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `This user is not allowed to create new object in ${className}`);
+        }
+
+        const cRoles = flattenUserRoles
+          .map(uR => uR.role)
           .filter((v, i, a) => i == a.indexOf(v)); // filter duplicated value
 
         this.userRoles = cRoles.concat(dRoles);
