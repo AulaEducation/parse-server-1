@@ -156,7 +156,7 @@ Auth.prototype._getRolesByClass = function(className) {
   return this._queryByClassName(restWhere, 'UBRoleDefinition');
 };
 
-Auth.prototype._loadCustomRoles = function(dRoles, roles, className, hasObjectId) {
+Auth.prototype._loadCustomRoles = function(dRoles, roles, className, isCreateRequest) {
   var cacheAdapter = this.config.cacheController;
 
   return cacheAdapter.role.get(this.user.id).then((cachedRoles) => {
@@ -182,19 +182,33 @@ Auth.prototype._loadCustomRoles = function(dRoles, roles, className, hasObjectId
           return Promise.resolve([]);
         }
 
-        // a user may have multiple roles: student, instructor
+        // a user may have multiple roles in one space: student, instructor
+        // from these roles, get permissions such as read, write
         const userRoles = results.map((result) => {
-          const classId = result.classRoom.objectId;
+          // current space id
+          const spaceId = result.classRoom.objectId;
+
+          // user role ('create', 'update', or 'read') in this `className` in this `space`
+          // for example: user A in class B, the roles for object C (with spaceId = B) are ['create', 'update', 'read']
           const matchedRole = roles.find(ro => ro.role === result.role);
 
+          // if this is new object, and user can't create, reject the request
+          // isCreateRequest is passed from RestWrite,
+          // indicate that this is write request, with no objectId
+          const canCreate = matchedRole.permissions.find(p => p === 'create').length > 0;
+
+          if (isCreateRequest && !canCreate) {
+            throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, 'This user is not allowed to create new object in ', className);
+          }
+
           return matchedRole
-            ? matchedRole.permissions.map(p => { // p can be read, create, update
-              // hasObjectId is true only for write request
-              if ((hasObjectId && p === 'update') || (!hasObjectId && p === 'create')) {
-                return `role:${className}-${classId}-write`;
+            ? matchedRole.permissions.map(p => {
+              // p can be read, create, update
+              if (p === 'update' || p === 'create') {
+                return `role:${className}-${spaceId}-write`;
               }
 
-              return `role:${className}-${classId}-read`;
+              return `role:${className}-${spaceId}-read`;
             })
             : null;
         });
