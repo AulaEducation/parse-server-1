@@ -101,6 +101,90 @@ var getAuthForLegacySessionToken = function({config, sessionToken, installationI
   });
 }
 
+/**
+ * Start custom role assignment
+ */
+
+function extractFirstWord(str) {
+  return str.split('-')[0]
+}
+
+function hasStringInArray(str, array) {
+  return array.indexOf(str) > -1;
+}
+
+function getClassRoles(allCustomRoles, className) {
+  return allCustomRoles.filter(ac => hasStringInArray(className, ac.permissions.map(p => extractFirstWord(p))));
+}
+
+function flattenArray(array) {
+  return array.reduce((a, b) => b ? a.concat(b) : a, []);
+}
+
+function removeEmptyValue(array) {
+  return array.filter(a => !!a);
+}
+
+function filterDuplication(array) {
+  return array.filter((v, i, a) => i == a.indexOf(v));
+}
+
+function getUserRoles(allCustomRoles, uRoles, userId) {
+  if (!uRoles || !uRoles.length) {
+    return [];
+  }
+
+  const rawRoles = allCustomRoles
+    .filter(ac => hasStringInArray(ac.role, uRoles))
+    .map(uR => uR.permissions);
+
+  const roles = flattenArray(rawRoles);
+  const userRoles = roles.concat(userId);
+
+  return userRoles;
+}
+
+function transformUserRoles(roles) {
+  const roleMap = {
+    create: 'write',
+    update: 'write',
+    read: 'read'
+  };
+
+  const tRoles = roles.map(r => {
+    const [cName, cRole] = r.split('-');
+
+    if (roleMap[cRole]) {
+      return `${cName}-${roleMap[cRole]}`;
+    }
+
+    return cName;
+  });
+
+  return filterDuplication(tRoles);
+}
+
+function transfromClassRoles(matchedRole, className, spaceId) {
+  const roleMap = {
+    create: 'write',
+    update: 'write',
+    read: 'read'
+  };
+
+  if (matchedRole) {
+    return matchedRole.permissions.map(p => {
+      const [cName, permisson] = p.split('-');
+
+      if (cName === className) {
+        return {
+          role: `role:${cName}-${spaceId}-${roleMap[permisson]}`,
+          isCreate: permisson === 'create'
+        };
+      }
+    });
+  }
+}
+
 // Returns a promise that resolves to an array of role names
 Auth.prototype.getUserRoles = function(className, spacePointer, hasObjectId) {
   if (this.isMaster || !this.user) {
@@ -116,16 +200,26 @@ Auth.prototype.getUserRoles = function(className, spacePointer, hasObjectId) {
   }
 
   // load general roles based on user.generalRole
-  return this._getGeneralRole()
-    .then(dRoles => {
-      return this._getRolesByClass(className)
-        .then((roles) => {
-          this.rolePromise = !roles.length || !spacePointer
-            ? this._loadRoles(dRoles)
-            : this._loadCustomRoles(dRoles, roles, className, spacePointer, hasObjectId);
+  return this._getAllCustomRoles()
+    .then(acRoles => {
+      const classRoles = getClassRoles(acRoles, className);
+      const userRoles = getUserRoles(acRoles, this.user.get('userRoles'), this.user.id);
+      const tUserRoles = transformUserRoles(userRoles);
 
-          return this.rolePromise;
-        });
+      if (classRoles.length > 0 && spacePointer) {
+        this.rolePromise = this._loadCustomRoles(tUserRoles, classRoles, className, spacePointer, hasObjectId);
+      } else {
+        // check if user can create new object
+        const roleName = `${className}-create`;
+
+        if (userRoles.indexOf(roleName) === -1) {
+          throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to create new object in ${className}`);
+        }
+
+        this.rolePromise = this._loadRoles(tUserRoles);
+      }
+
+      return this.rolePromise;
     });
 };
 
@@ -138,25 +232,11 @@ Auth.prototype._queryByClassName = function(restWhere, className) {
 };
 
 // for direct roles such as direct message
-Auth.prototype._getGeneralRole = function() {
-  const restWhere = {
-    name: this.user.get('generalRole') || 'general'
-  };
-
-  return this._queryByClassName(restWhere, 'UBUserRoleDefinition')
-    .then(results => results.length ? results[0].permissions.map(p => `role:${p}`) : []);
+Auth.prototype._getAllCustomRoles = function() {
+  return this._queryByClassName({}, 'UBRoleDefinition');
 };
 
-// for class based roles
-Auth.prototype._getRolesByClass = function(className) {
-  const restWhere = {
-    objectName: className
-  };
-
-  return this._queryByClassName(restWhere, 'UBRoleDefinition');
-};
-
-Auth.prototype._loadCustomRoles = function(dRoles, roles, className, spacePointer, isCreateRequest) {
+Auth.prototype._loadCustomRoles = function(userRoles, classRoles, className, spacePointer, isCreateRequest) {
   const restWhere = {
     user: {
       __type: 'Pointer',
@@ -174,45 +254,35 @@ Auth.prototype._loadCustomRoles = function(dRoles, roles, className, spacePointe
         throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to access space ${spacePointer.objectId}`);
       }
 
-      // a user may have multiple roles in one space: student, instructor
+      // a user may have multiple roles in one space: [ 'student', 'instructor' ]
       // from these roles, get permissions such as read, write
-      const userRoles = results.map((result) => {
+      const userClassRoles = results.map((result) => {
         // current space id
         const spaceId = result.classRoom.objectId;
 
         // user role ('create', 'update', or 'read') in this `className` in this `space`
         // for example: user A in class B, the roles for object C (with spaceId = B) are ['create', 'update', 'read']
-        const matchedRole = roles.find(ro => ro.role === result.role);
+        const matchedRole = classRoles.find(cr => cr.role === result.role);
 
-        const roleMap = {
-          create: 'write',
-          update: 'write',
-          read: 'read'
-        };
-
-        return matchedRole ? matchedRole.permissions.map(p => ({
-          role: `role:${className}-${spaceId}-${roleMap[p]}`,
-          isCreate: p === 'create'
-        })) : null;
+        return transfromClassRoles(matchedRole, className, spaceId);
       });
 
       // flatten roles to an array of objects
-      const flattenUserRoles = userRoles.reduce((a, b) => b ? a.concat(b) : a, []);
+      const flattenUserClassRoles = removeEmptyValue(flattenArray(userClassRoles));
 
       // if this is new object, and user can't create, reject the request
       // isCreateRequest is passed from RestWrite,
       // indicate that this is write request, with no objectId
-      const canCreate = flattenUserRoles.reduce((a, b) => a || b.isCreate, false);
+      const canCreate = flattenUserClassRoles.reduce((a, b) => a || b.isCreate, false);
 
       if (isCreateRequest && !canCreate) {
         throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to create new object in ${className}`);
       }
 
-      const cRoles = flattenUserRoles
-        .map(uR => uR.role)
-        .filter((v, i, a) => i == a.indexOf(v)); // filter duplicated value
+      const cRoles = flattenUserClassRoles.map(uR => uR.role);
+      const tCRoles = filterDuplication(cRoles);
 
-      this.userRoles = cRoles.concat(dRoles);
+      this.userRoles = tCRoles.concat(userRoles);
       this.fetchedRoles = true;
       this.rolePromise = null;
 
@@ -221,7 +291,7 @@ Auth.prototype._loadCustomRoles = function(dRoles, roles, className, spacePointe
 };
 
 // Iterates through the role tree and compiles a users roles
-Auth.prototype._loadRoles = function(dRoles) {
+Auth.prototype._loadRoles = function(uRoles) {
   var cacheAdapter = this.config.cacheController;
   return cacheAdapter.role.get(this.user.id).then((cachedRoles) => {
     if (cachedRoles != null) {
@@ -262,7 +332,7 @@ Auth.prototype._loadRoles = function(dRoles) {
             return 'role:' + r;
           });
 
-          this.userRoles = userRoles.concat(dRoles);
+          this.userRoles = userRoles.concat(uRoles);
           this.fetchedRoles = true;
           this.rolePromise = null;
           cacheAdapter.role.put(this.user.id, Array(...this.userRoles));
