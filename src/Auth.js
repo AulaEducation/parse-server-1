@@ -155,7 +155,7 @@ function transformUserRoles(roles) {
     const [cName, cRole] = r.split('-');
 
     if (roleMap[cRole]) {
-      return `${cName}-${roleMap[cRole]}`;
+      return `role:${cName}-${roleMap[cRole]}`;
     }
 
     return cName;
