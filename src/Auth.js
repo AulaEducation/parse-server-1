@@ -186,7 +186,7 @@ function transfromClassRoles(matchedRole, className, spaceId) {
 }
 
 // Returns a promise that resolves to an array of role names
-Auth.prototype.getUserRoles = function(className, spacePointer, hasObjectId) {
+Auth.prototype.getUserRoles = function(className, spacePointer, isCreateRequest) {
   if (this.isMaster || !this.user) {
     return Promise.resolve([]);
   }
@@ -207,12 +207,13 @@ Auth.prototype.getUserRoles = function(className, spacePointer, hasObjectId) {
       const tUserRoles = transformUserRoles(userRoles);
 
       if (classRoles.length > 0 && spacePointer) {
-        this.rolePromise = this._loadCustomRoles(tUserRoles, classRoles, className, spacePointer, hasObjectId);
+        this.rolePromise = this._loadCustomRoles(tUserRoles, classRoles, className, spacePointer, isCreateRequest);
       } else {
         // check if user can create new object
         const roleName = `${className}-create`;
+        const canCreate = userRoles.indexOf(roleName) > -1;
 
-        if (userRoles.indexOf(roleName) === -1) {
+        if (isCreateRequest && !canCreate) {
           throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to create new object in ${className}`);
         }
 
