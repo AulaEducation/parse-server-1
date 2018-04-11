@@ -158,7 +158,7 @@ function transformUserRoles(roles) {
       return `role:${cName}-${roleMap[cRole]}`;
     }
 
-    return cName;
+    return `role:${cName}`;
   });
 
   return filterDuplication(tRoles);
