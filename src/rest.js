@@ -91,7 +91,7 @@ function del(config, auth, className, objectId) {
     return Promise.resolve({});
   }).then(() => {
     if (!auth.isMaster) {
-      return auth.getUserRoles();
+      return auth.getUserRoles(className, null, { objectId });
     } else {
       return;
     }

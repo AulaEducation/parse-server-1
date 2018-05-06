@@ -106,7 +106,7 @@ var getAuthForLegacySessionToken = function({config, sessionToken, installationI
  */
 
 function extractFirstWord(str) {
-  return str.split('-')[0]
+  return str.split('-')[0];
 }
 
 function hasStringInArray(str, array) {
@@ -171,22 +171,110 @@ function transfromClassRoles(matchedRole, className, spaceId) {
     read: 'read'
   };
 
-  if (matchedRole) {
-    return matchedRole.permissions.map(p => {
-      const [cName, permisson] = p.split('-');
-
-      if (cName === className) {
-        return {
-          role: `role:${cName}-${spaceId}-${roleMap[permisson]}`,
-          isCreate: permisson === 'create'
-        };
-      }
-    });
+  if (!matchedRole) {
+    return [];
   }
+
+  return matchedRole.permissions.map(p => {
+    const [cName, permisson] = p.split('-');
+
+    if (cName === className) {
+      return {
+        role: `role:${cName}-${spaceId}-${roleMap[permisson]}`,
+        isCreate: permisson === 'create'
+      };
+    }
+
+    // support legacy role system
+    if (cName === 'classRoom') {
+      return {
+        role: `role:${cName}-${spaceId}-${permisson}`,
+      }
+    }
+  });
 }
 
+function isNewRoleEnabled(allRoles) {
+  const rootRole = allRoles.find(ar => ar.role === 'root');
+
+  return rootRole && rootRole.permissions && rootRole.permissions[0] === 'all';
+}
+
+
+// for direct roles such as direct message
+Auth.prototype._getAllCustomRoles = function () {
+  return this._queryByClassName({}, 'UBRoleDefinition');
+};
+
+Auth.prototype._queryToSpace = function (restWhere, className) {
+  return this._queryByClassName(restWhere, className)
+    .then(objs => {
+      if (objs.length > 0) {
+        const obj = objs[0];
+
+        if (obj.classRoom) {
+          return obj.classRoom;
+        }
+
+        if (obj.post && obj.objectId) {
+          const restWhereNext = { objectId: obj.post.objectId };
+          const classNameNext = obj.post.className;
+
+          return this._queryToSpace(restWhereNext, classNameNext);
+        }
+
+        return null;
+      }
+
+      return null;
+    });
+};
+
+Auth.prototype.getSpacePointer = function (className, data, query, restQuery) {
+  if (data && data.classRoom) {
+    return Promise.resolve(data.classRoom);
+  }
+
+  if (restQuery && restQuery.classRoom) {
+    return Promise.resolve(restQuery.classRoom);
+  }
+
+  let restWhere, restClass;
+
+  if (data && data.post && data.post.objectId) {
+    restWhere = { objectId: data.post.objectId };
+    restClass = data.post.className;
+  }
+
+  if (data && data.itemType && data.itemId) {
+    restWhere = { objectId: data.itemId };
+    restClass = data.itemType;
+  }
+
+  if (query && query.objectId) {
+    restWhere = { objectId: query.objectId };
+    restClass = className;
+  }
+
+  console.log(`
+    restWhere: ${JSON.stringify(restWhere)}, restClass: ${restClass}
+  `);
+
+  return restWhere && restClass
+    ? this._queryToSpace(restWhere, restClass)
+    : Promise.resolve();
+};
+
 // Returns a promise that resolves to an array of role names
-Auth.prototype.getUserRoles = function(className, spacePointer, isCreateRequest) {
+Auth.prototype.getUserRoles = function (className, data, query, restQuery) {
+  console.log(`
+    Incoming data:
+    - className: ${className}
+    - data: ${JSON.stringify(data)}
+    - query: ${JSON.stringify(query)}
+    - restQuery: ${JSON.stringify(restQuery)}
+  `);
+
   if (this.isMaster || !this.user) {
     return Promise.resolve([]);
   }
@@ -200,44 +288,53 @@ Auth.prototype.getUserRoles = function(className, spacePointer, isCreateRequest)
   }
 
   // load general roles based on user.generalRole
-  return this._getAllCustomRoles()
-    .then(acRoles => {
-      const classRoles = getClassRoles(acRoles, className);
-      const userRoles = getUserRoles(acRoles, this.user.get('userRoles'), this.user.id);
-      const tUserRoles = transformUserRoles(userRoles);
-
-      if (classRoles.length > 0 && spacePointer) {
-        this.rolePromise = this._loadCustomRoles(tUserRoles, classRoles, className, spacePointer, isCreateRequest);
-      } else {
-        // check if user can create new object
-        const roleName = `${className}-create`;
-        const canCreate = userRoles.indexOf(roleName) > -1;
-
-        if (isCreateRequest && !canCreate) {
-          throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to create new object in ${className}`);
-        }
-
-        this.rolePromise = this._loadRoles(tUserRoles);
-      }
+  return this._getAllCustomRoles().then((acRoles) => {
+    // check if we're using new role system
+    // if use new role system, we should add root role with permissions = ['all'] to UBRoleDefinition
+    if (!isNewRoleEnabled(acRoles)) {
+      this.rolePromise = this._loadRoles([]);
 
       return this.rolePromise;
-    });
+    } else {
+      return this.getSpacePointer(className, data, query, restQuery).then((spacePointer) => {
+        console.log(`
+          space pointer: ${JSON.stringify(spacePointer)}
+        `);
+
+        const classRoles = getClassRoles(acRoles, className);
+        const userRoles = getUserRoles(acRoles, this.user.get('userRoles'), this.user.id);
+        const tUserRoles = transformUserRoles(userRoles);
+        const isCreateRequest = (!data || !data.objectId) && (!query || !query.objectId);
+
+        if (classRoles.length && spacePointer) {
+          this.rolePromise = this._loadCustomRoles(tUserRoles, classRoles, className, spacePointer, isCreateRequest);
+        } else {
+          // check if user can create new object
+          const roleName = `${className}-create`;
+          const canCreate = userRoles.indexOf(roleName) > -1;
+
+          if (isCreateRequest && !canCreate) {
+            throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to create new object in ${className}`);
+          }
+
+          this.rolePromise = this._loadRoles(tUserRoles);
+        }
+
+        return this.rolePromise;
+      });
+    }
+  });
 };
 
-Auth.prototype._queryByClassName = function(restWhere, className) {
-  return new Promise((resolve) => {
+Auth.prototype._queryByClassName = function (restWhere, className) {
+  return new Promise(resolve => {
     const query = new RestQuery(this.config, master(this.config), className, restWhere, {});
 
     return query.execute().then(response => resolve(response.results));
   });
 };
 
-// for direct roles such as direct message
-Auth.prototype._getAllCustomRoles = function() {
-  return this._queryByClassName({}, 'UBRoleDefinition');
-};
-
-Auth.prototype._loadCustomRoles = function(userRoles, classRoles, className, spacePointer, isCreateRequest) {
+Auth.prototype._loadCustomRoles = function (userRoles, classRoles, className, spacePointer, isCreateRequest) {
   const restWhere = {
     user: {
       __type: 'Pointer',
@@ -247,54 +344,58 @@ Auth.prototype._loadCustomRoles = function(userRoles, classRoles, className, spa
     classRoom: spacePointer
   };
 
-  return this._queryByClassName(restWhere, 'UBClassRoomUser')
-    .then(results => {
-      // Nothing found
-      // user doesn't have any permission on this object
-      if (!results.length) {
-        throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to access space ${spacePointer.objectId}`);
-      }
+  return this._queryByClassName(restWhere, 'UBClassRoomUser').then(results => {
+    // Nothing found
+    // user doesn't have any permission on this object
+    if (!results.length) {
+      throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to access space ${spacePointer.objectId}`);
+    }
 
-      // a user may have multiple roles in one space: [ 'student', 'instructor' ]
-      // from these roles, get permissions such as read, write
-      const userClassRoles = results.map((result) => {
-        // current space id
-        const spaceId = result.classRoom.objectId;
+    // a user may have multiple roles in one space: [{ role: 'student' }, { role: 'instructor' }]
+    // from these roles, get permissions such as read, write
+    const userClassRoles = results.map(result => {
+      // current space id
+      const spaceId = result.classRoom.objectId;
 
-        // user role ('create', 'update', or 'read') in this `className` in this `space`
-        // for example: user A in class B, the roles for object C (with spaceId = B) are ['create', 'update', 'read']
-        const matchedRole = classRoles.find(cr => cr.role === result.role);
+      // user role ('create', 'update', or 'read') in this `className` in this `space`
+      // for example: user A in class B, the roles for object C (with spaceId = B) are ['create', 'update', 'read']
+      const matchedRole = classRoles.find(cr => cr.role === result.role);
 
-        return transfromClassRoles(matchedRole, className, spaceId);
-      });
-
-      // flatten roles to an array of objects
-      const flattenUserClassRoles = removeEmptyValue(flattenArray(userClassRoles));
-
-      // if this is new object, and user can't create, reject the request
-      // isCreateRequest is passed from RestWrite,
-      // indicate that this is write request, with no objectId
-      const canCreate = flattenUserClassRoles.reduce((a, b) => a || b.isCreate, false);
-
-      if (isCreateRequest && !canCreate) {
-        throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to create new object in ${className}`);
-      }
-
-      const cRoles = flattenUserClassRoles.map(uR => uR.role);
-      const tCRoles = filterDuplication(cRoles);
-
-      this.userRoles = tCRoles.concat(userRoles);
-      this.fetchedRoles = true;
-      this.rolePromise = null;
-
-      return Promise.resolve(this.userRoles);
+      return transfromClassRoles(matchedRole, className, spaceId);
     });
+
+    // flatten roles to an array of objects
+    const flattenUserClassRoles = removeEmptyValue(flattenArray(userClassRoles));
+
+    // if this is new object, and user can't create, reject the request
+    // isCreateRequest is passed from RestWrite,
+    // indicate that this is write request, with no objectId
+    const canCreate = flattenUserClassRoles.reduce((a, b) => a || b.isCreate, false);
+
+    if (isCreateRequest && !canCreate) {
+      throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, `User ${this.user.id} is not allowed to create new object in ${className}`);
+    }
+
+    const cRoles = flattenUserClassRoles.map(uR => uR.role);
+    const tCRoles = filterDuplication(cRoles);
+
+    this.userRoles = tCRoles.concat(userRoles);
+    this.fetchedRoles = true;
+    this.rolePromise = null;
+
+    console.log(`
+      new user roles:
+      ${this.userRoles}
+    `);
+
+    return Promise.resolve(this.userRoles);
+  });
 };
 
 // Iterates through the role tree and compiles a users roles
-Auth.prototype._loadRoles = function(uRoles) {
+Auth.prototype._loadRoles = function (uRoles) {
   var cacheAdapter = this.config.cacheController;
-  return cacheAdapter.role.get(this.user.id).then((cachedRoles) => {
+  return cacheAdapter.role.get(this.user.id).then(cachedRoles => {
     if (cachedRoles != null) {
       this.fetchedRoles = true;
       this.userRoles = cachedRoles;
@@ -310,7 +411,7 @@ Auth.prototype._loadRoles = function(uRoles) {
     };
     // First get the role ids this user is directly a member of
     var query = new RestQuery(this.config, master(this.config), '_Role', restWhere, {});
-    return query.execute().then((response) => {
+    return query.execute().then(response => {
       var results = response.results;
       if (!results.length) {
         this.userRoles = [];
@@ -324,21 +425,26 @@ Auth.prototype._loadRoles = function(uRoles) {
         m.names.push(r.name);
         m.ids.push(r.objectId);
         return m;
-      }, {ids: [], names: []});
+      }, { ids: [], names: [] });
 
       // run the recursive finding
-      return this._getAllRolesNamesForRoleIds(rolesMap.ids, rolesMap.names)
-        .then((roleNames) => {
-          const userRoles = roleNames.map((r) => {
-            return 'role:' + r;
-          });
-
-          this.userRoles = userRoles.concat(uRoles);
-          this.fetchedRoles = true;
-          this.rolePromise = null;
-          cacheAdapter.role.put(this.user.id, Array(...this.userRoles));
-          return Promise.resolve(this.userRoles);
+      return this._getAllRolesNamesForRoleIds(rolesMap.ids, rolesMap.names).then(roleNames => {
+        const userRoles = roleNames.map(r => {
+          return 'role:' + r;
         });
+
+        this.userRoles = userRoles.concat(uRoles);
+        this.fetchedRoles = true;
+        this.rolePromise = null;
+        cacheAdapter.role.put(this.user.id, Array(...this.userRoles));
+
+        console.log(`
+          legacy user roles:
+          ${this.userRoles}
+        `);
+
+        return Promise.resolve(this.userRoles);
+      });
     });
   });
 };
