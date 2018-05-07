@@ -1,12 +1,8 @@
 {
-  "name": "parse-server",
-  "version": "2.7.4",
+  "name": "@ublend-npm/parse-server",
+  "version": "2.10.2",
   "description": "An express module providing a Parse-compatible API server",
   "main": "lib/index.js",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/parse-community/parse-server"
-  },
   "files": [
     "bin/",
     "lib/",
@@ -73,8 +69,7 @@
     "test": "cross-env MONGODB_VERSION=${MONGODB_VERSION:=3.2.6} MONGODB_STORAGE_ENGINE=mmapv1 TESTING=1 jasmine",
     "coverage": "cross-env MONGODB_VERSION=${MONGODB_VERSION:=3.2.6} MONGODB_STORAGE_ENGINE=mmapv1 TESTING=1 nyc jasmine",
     "start": "node ./bin/parse-server",
-    "prepublish": "npm run build",
-    "postinstall": "node -p 'require(\"./postinstall.js\")()'"
+    "prepublish": "npm run build"
   },
   "engines": {
     "node": ">=6.11.4"

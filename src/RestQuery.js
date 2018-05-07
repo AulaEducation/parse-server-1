@@ -187,7 +187,7 @@ RestQuery.prototype.getUserAndRoleACL = function() {
   if (this.auth.isMaster || !this.auth.user) {
     return Promise.resolve();
   }
-  return this.auth.getUserRoles().then((roles) => {
+  return this.auth.getUserRoles(this.className, this.data, this.query, this.restWhere).then((roles) => {
     // Concat with the roles to prevent duplications on multiple calls
     const aclSet = new Set([].concat(this.findOptions.acl, roles));
     this.findOptions.acl = Array.from(aclSet);
