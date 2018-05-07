@@ -105,6 +105,12 @@ var getAuthForLegacySessionToken = function({config, sessionToken, installationI
  * Start custom role assignment
  */
 
+const ROLE_MAP = {
+  update: 'write',
+  read: 'read',
+  create: 'read',
+};
+
 function extractFirstWord(str) {
   return str.split('-')[0];
 }
@@ -145,17 +151,11 @@ function getUserRoles(allCustomRoles, uRoles, userId) {
 }
 
 function transformUserRoles(roles) {
-  const roleMap = {
-    create: 'write',
-    update: 'write',
-    read: 'read'
-  };
-
   const tRoles = roles.map(r => {
     const [cName, cRole] = r.split('-');
 
-    if (roleMap[cRole]) {
-      return `role:${cName}-${roleMap[cRole]}`;
+    if (ROLE_MAP[cRole]) {
+      return `role:${cName}-${ROLE_MAP[cRole]}`;
     }
 
     return `role:${cName}`;
@@ -164,13 +164,7 @@ function transformUserRoles(roles) {
   return filterDuplication(tRoles);
 }
 
-function transfromClassRoles(matchedRole, className, spaceId) {
-  const roleMap = {
-    create: 'write',
-    update: 'write',
-    read: 'read'
-  };
-
+function transfromClassRoles(matchedRole, className, spaceId, shouldSupportLegacy) {
   if (!matchedRole) {
     return [];
   }
@@ -178,28 +172,27 @@ function transfromClassRoles(matchedRole, className, spaceId) {
   return matchedRole.permissions.map(p => {
     const [cName, permisson] = p.split('-');
 
-    if (cName === className) {
+    if (cName === className && ROLE_MAP[permisson]) {
       return {
-        role: `role:${cName}-${spaceId}-${roleMap[permisson]}`,
+        role: `role:${cName}-${spaceId}-${ROLE_MAP[permisson]}`,
         isCreate: permisson === 'create'
       };
     }
 
     // support legacy role system
-    if (cName === 'classRoom') {
+    if (shouldSupportLegacy && cName === 'classRoom') {
       return {
-        role: `role:${cName}-${spaceId}-${permisson}`,
-      }
+        role: `role:${cName}-${spaceId}-${permisson}`
+      };
     }
   });
 }
 
-function isNewRoleEnabled(allRoles) {
+function getRootPermisson(allRoles) {
   const rootRole = allRoles.find(ar => ar.role === 'root');
 
-  return rootRole && rootRole.permissions && rootRole.permissions[0] === 'all';
+  return rootRole.permissions;
 }
-
 
 // for direct roles such as direct message
 Auth.prototype._getAllCustomRoles = function () {
@@ -256,10 +249,6 @@ Auth.prototype.getSpacePointer = function (className, data, query, restQuery) {
     restClass = className;
   }
 
-  console.log(`
-    restWhere: ${JSON.stringify(restWhere)}, restClass: ${restClass}
-  `);
-
   return restWhere && restClass
     ? this._queryToSpace(restWhere, restClass)
     : Promise.resolve();
@@ -267,14 +256,6 @@ Auth.prototype.getSpacePointer = function (className, data, query, restQuery) {
 
 // Returns a promise that resolves to an array of role names
 Auth.prototype.getUserRoles = function (className, data, query, restQuery) {
-  console.log(`
-    Incoming data:
-    - className: ${className}
-    - data: ${JSON.stringify(data)}
-    - query: ${JSON.stringify(query)}
-    - restQuery: ${JSON.stringify(restQuery)}
-  `);
-
   if (this.isMaster || !this.user) {
     return Promise.resolve([]);
   }
@@ -288,26 +269,27 @@ Auth.prototype.getUserRoles = function (className, data, query, restQuery) {
   }
 
   // load general roles based on user.generalRole
-  return this._getAllCustomRoles().then((acRoles) => {
+  return this._getAllCustomRoles().then(acRoles => {
     // check if we're using new role system
-    // if use new role system, we should add root role with permissions = ['all'] to UBRoleDefinition
-    if (!isNewRoleEnabled(acRoles)) {
+    // if use new role system, we should add root role with permissions = ['legacy'] or ['new'] to UBRoleDefinition
+    // all permissons: ['none'], ['legacy'], ['new']
+    const rootPermisson = getRootPermisson(acRoles);
+    const shouldSupportNewRole = rootPermisson.includes('legacy') || rootPermisson.includes('new');
+    const shouldSupportLegacy = rootPermisson.includes('legacy');
+
+    if (!shouldSupportNewRole) {
       this.rolePromise = this._loadRoles([]);
 
       return this.rolePromise;
     } else {
-      return this.getSpacePointer(className, data, query, restQuery).then((spacePointer) => {
-        console.log(`
-          space pointer: ${JSON.stringify(spacePointer)}
-        `);
-
+      return this.getSpacePointer(className, data, query, restQuery).then(spacePointer => {
         const classRoles = getClassRoles(acRoles, className);
         const userRoles = getUserRoles(acRoles, this.user.get('userRoles'), this.user.id);
         const tUserRoles = transformUserRoles(userRoles);
         const isCreateRequest = (!data || !data.objectId) && (!query || !query.objectId);
 
         if (classRoles.length && spacePointer) {
-          this.rolePromise = this._loadCustomRoles(tUserRoles, classRoles, className, spacePointer, isCreateRequest);
+          this.rolePromise = this._loadCustomRoles(tUserRoles, classRoles, className, spacePointer, isCreateRequest, shouldSupportLegacy);
         } else {
           // check if user can create new object
           const roleName = `${className}-create`;
@@ -334,7 +316,7 @@ Auth.prototype._queryByClassName = function (restWhere, className) {
   });
 };
 
-Auth.prototype._loadCustomRoles = function (userRoles, classRoles, className, spacePointer, isCreateRequest) {
+Auth.prototype._loadCustomRoles = function (userRoles, classRoles, className, spacePointer, isCreateRequest, shouldSupportLegacy) {
   const restWhere = {
     user: {
       __type: 'Pointer',
@@ -361,7 +343,7 @@ Auth.prototype._loadCustomRoles = function (userRoles, classRoles, className, sp
       // for example: user A in class B, the roles for object C (with spaceId = B) are ['create', 'update', 'read']
       const matchedRole = classRoles.find(cr => cr.role === result.role);
 
-      return transfromClassRoles(matchedRole, className, spaceId);
+      return transfromClassRoles(matchedRole, className, spaceId, shouldSupportLegacy);
     });
 
     // flatten roles to an array of objects
@@ -382,11 +364,6 @@ Auth.prototype._loadCustomRoles = function (userRoles, classRoles, className, sp
     this.userRoles = tCRoles.concat(userRoles);
     this.fetchedRoles = true;
     this.rolePromise = null;
-
-    console.log(`
-      new user roles:
-      ${this.userRoles}
-    `);
 
     return Promise.resolve(this.userRoles);
   });
@@ -437,11 +414,6 @@ Auth.prototype._loadRoles = function (uRoles) {
         this.fetchedRoles = true;
         this.rolePromise = null;
         cacheAdapter.role.put(this.user.id, Array(...this.userRoles));
-
-        console.log(`
-          legacy user roles:
-          ${this.userRoles}
-        `);
 
         return Promise.resolve(this.userRoles);
       });
