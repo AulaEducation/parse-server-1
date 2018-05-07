@@ -216,6 +216,13 @@ Auth.prototype._queryToSpace = function (restWhere, className) {
           return this._queryToSpace(restWhereNext, classNameNext);
         }
 
+        if (obj.itemType && obj.itemId) {
+          const restWhereNext = { objectId: obj.itemId };
+          const classNameNext = obj.itemType;
+
+          return this._queryToSpace(restWhereNext, classNameNext);
+        }
+
         return null;
       }
 
@@ -239,12 +246,17 @@ Auth.prototype.getSpacePointer = function (className, data, query, restQuery) {
     restClass = data.post.className;
   }
 
-  if (data && data.itemType && data.itemId) {
+  else if (data && data.itemType && data.itemId) {
     restWhere = { objectId: data.itemId };
     restClass = data.itemType;
   }
 
-  if (query && query.objectId) {
+  else if (data && data.reaction && data.reaction.objectId) {
+    restWhere = { objectId: data.reaction.objectId };
+    restClass = data.reaction.className;
+  }
+
+  else if (query && query.objectId) {
     restWhere = { objectId: query.objectId };
     restClass = className;
   }
